@@ -1,11 +1,11 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/controls/OrbitControls.js';
-import { FirstPersonControls } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/controls/FirstPersonControls.js';
 import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/controls/PointerLockControls.js';
 import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js';
 import Stats from 'https://cdn.jsdelivr.net/npm/stats.js@0.17.0/build/stats.min.js';
 import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/loaders/GLTFLoader.js';
-import { ImprovedNoise } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/jsm/math/ImprovedNoise.js';
+
+import { MartianTerrain } from './terrain.js';
+import { Player } from './player.js';
 
 // Game state
 const gameState = {
@@ -19,7 +19,8 @@ const gameState = {
     oxygenDepletionRate: 0.05, // per second
     temperatureRange: { day: 20, night: -80 }, // Celsius
     isLoaded: false,
-    playerCanMove: false
+    playerCanMove: false,
+    gameOver: false
 };
 
 // Stats setup
@@ -53,25 +54,8 @@ world.gravity.set(0, -3.711, 0); // Mars gravity (3.711 m/s²)
 world.broadphase = new CANNON.NaiveBroadphase();
 world.solver.iterations = 10;
 
-// Player physics body
-const playerShape = new CANNON.Sphere(0.5);
-const playerBody = new CANNON.Body({ mass: 70 }); // Average human mass
-playerBody.addShape(playerShape);
-playerBody.position.set(0, 5, 0);
-playerBody.linearDamping = 0.9;
-world.addBody(playerBody);
-
-// Movement variables
-const moveForward = false;
-const moveBackward = false;
-const moveLeft = false;
-const moveRight = false;
-const canJump = false;
-let isRunning = false;
-let velocity = new THREE.Vector3();
-let direction = new THREE.Vector3();
-let playerSpeed = 5.0; // Base speed
-let runningSpeed = 8.0; // Running speed
+// Player
+let player;
 
 // Lighting
 // Ambient light (dim for Mars)
@@ -91,88 +75,6 @@ sunLight.shadow.camera.right = 100;
 sunLight.shadow.camera.top = 100;
 sunLight.shadow.camera.bottom = -100;
 scene.add(sunLight);
-
-// Create Mars terrain
-function createMartianTerrain() {
-    const worldWidth = 256;
-    const worldDepth = 256;
-    const worldHalfWidth = worldWidth / 2;
-    const worldHalfDepth = worldDepth / 2;
-    const data = generateHeight(worldWidth, worldDepth);
-    
-    const geometry = new THREE.PlaneGeometry(300, 300, worldWidth - 1, worldDepth - 1);
-    geometry.rotateX(-Math.PI / 2);
-    
-    const vertices = geometry.attributes.position.array;
-    
-    for (let i = 0, j = 0, l = vertices.length; i < l; i++, j += 3) {
-        vertices[j + 1] = data[i] * 10;
-    }
-    
-    geometry.computeVertexNormals();
-    
-    const groundMaterial = new THREE.MeshStandardMaterial({
-        color: 0xbf5e3d, // Mars reddish-brown
-        metalness: 0.1,
-        roughness: 0.9
-    });
-    
-    const terrain = new THREE.Mesh(geometry, groundMaterial);
-    terrain.receiveShadow = true;
-    scene.add(terrain);
-    
-    // Create physics for terrain
-    const heightfieldShape = new CANNON.Heightfield(data, {
-        elementSize: 300 / worldWidth
-    });
-    
-    const terrainBody = new CANNON.Body({ mass: 0 });
-    terrainBody.addShape(heightfieldShape);
-    terrainBody.position.set(-worldHalfWidth, -5, -worldHalfDepth);
-    terrainBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
-    world.addBody(terrainBody);
-    
-    return terrain;
-}
-
-function generateHeight(width, height) {
-    const size = width * height;
-    const data = new Float32Array(size);
-    const perlin = new ImprovedNoise();
-    const z = Math.random() * 100;
-    
-    let quality = 1;
-    
-    for (let j = 0; j < 4; j++) {
-        for (let i = 0; i < size; i++) {
-            const x = i % width;
-            const y = ~~(i / width);
-            data[i] += Math.abs(perlin.noise(x / quality, y / quality, z) * quality);
-        }
-        
-        quality *= 5;
-    }
-    
-    return data;
-}
-
-// Create skybox
-function createSkybox() {
-    const skyboxGeometry = new THREE.BoxGeometry(1000, 1000, 1000);
-    const skyboxMaterials = [
-        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // right
-        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // left
-        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // top
-        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // bottom
-        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // front
-        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide })  // back
-    ];
-    
-    const skybox = new THREE.Mesh(skyboxGeometry, skyboxMaterials);
-    scene.add(skybox);
-    
-    return skybox;
-}
 
 // Create a simple habitat module
 function createHabitat() {
@@ -232,47 +134,6 @@ function createHabitat() {
     return habitatGroup;
 }
 
-// Create rocks and obstacles
-function createRocks() {
-    const rocks = new THREE.Group();
-    
-    for (let i = 0; i < 50; i++) {
-        const radius = 0.5 + Math.random() * 2;
-        const geometry = new THREE.DodecahedronGeometry(radius, 0);
-        const material = new THREE.MeshStandardMaterial({
-            color: 0xa86032,
-            metalness: 0.1,
-            roughness: 0.9
-        });
-        
-        const rock = new THREE.Mesh(geometry, material);
-        
-        // Random position within a certain range
-        const x = (Math.random() - 0.5) * 100;
-        const z = (Math.random() - 0.5) * 100;
-        let y = 0;
-        
-        rock.position.set(x, y, z);
-        rock.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        rock.castShadow = true;
-        rock.receiveShadow = true;
-        
-        rocks.add(rock);
-        
-        // Add physics for larger rocks
-        if (radius > 1) {
-            const rockShape = new CANNON.Sphere(radius);
-            const rockBody = new CANNON.Body({ mass: 0 });
-            rockBody.addShape(rockShape);
-            rockBody.position.set(x, y + radius, z);
-            world.addBody(rockBody);
-        }
-    }
-    
-    scene.add(rocks);
-    return rocks;
-}
-
 // Create dust particles
 function createDustParticles() {
     const particleCount = 1000;
@@ -299,6 +160,24 @@ function createDustParticles() {
     scene.add(particleSystem);
     
     return particleSystem;
+}
+
+// Create skybox
+function createSkybox() {
+    const skyboxGeometry = new THREE.BoxGeometry(1000, 1000, 1000);
+    const skyboxMaterials = [
+        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // right
+        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // left
+        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // top
+        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // bottom
+        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide }), // front
+        new THREE.MeshBasicMaterial({ color: 0xd4c5b5, side: THREE.BackSide })  // back
+    ];
+    
+    const skybox = new THREE.Mesh(skyboxGeometry, skyboxMaterials);
+    scene.add(skybox);
+    
+    return skybox;
 }
 
 // Update HUD
@@ -355,23 +234,37 @@ function updateDayNightCycle(delta) {
 
 // Update resources
 function updateResources(delta) {
-    // Deplete oxygen over time
-    gameState.oxygen = Math.max(0, gameState.oxygen - gameState.oxygenDepletionRate * delta);
-    
-    // Deplete water and food more slowly
-    gameState.water = Math.max(0, gameState.water - 0.01 * delta);
-    gameState.food = Math.max(0, gameState.food - 0.005 * delta);
-    
-    // If running, deplete oxygen faster
-    if (isRunning) {
-        gameState.oxygen = Math.max(0, gameState.oxygen - 0.05 * delta);
+    if (player) {
+        const resources = player.updateResources(delta);
+        gameState.oxygen = resources.oxygen;
+        gameState.water = resources.water;
+        gameState.food = resources.food;
+    } else {
+        // Fallback if player not initialized
+        gameState.oxygen = Math.max(0, gameState.oxygen - gameState.oxygenDepletionRate * delta);
+        gameState.water = Math.max(0, gameState.water - 0.01 * delta);
+        gameState.food = Math.max(0, gameState.food - 0.005 * delta);
     }
     
     // If oxygen is depleted, game over
-    if (gameState.oxygen <= 0) {
-        // Game over logic here
-        console.log("Game over: Oxygen depleted");
+    if (gameState.oxygen <= 0 && !gameState.gameOver) {
+        gameOver("You ran out of oxygen");
     }
+}
+
+// Game over function
+function gameOver(reason) {
+    gameState.gameOver = true;
+    gameState.playerCanMove = false;
+    controls.unlock();
+    
+    document.getElementById('death-reason').textContent = reason;
+    document.getElementById('game-over').style.display = 'flex';
+}
+
+// Restart game
+function restartGame() {
+    location.reload();
 }
 
 // Handle keyboard input
@@ -381,52 +274,54 @@ const onKeyDown = function(event) {
     switch (event.code) {
         case 'ArrowUp':
         case 'KeyW':
-            moveForward = true;
+            player.setControls({ moveForward: true });
             break;
         case 'ArrowLeft':
         case 'KeyA':
-            moveLeft = true;
+            player.setControls({ moveLeft: true });
             break;
         case 'ArrowDown':
         case 'KeyS':
-            moveBackward = true;
+            player.setControls({ moveBackward: true });
             break;
         case 'ArrowRight':
         case 'KeyD':
-            moveRight = true;
+            player.setControls({ moveRight: true });
             break;
         case 'Space':
-            if (canJump) {
-                playerBody.velocity.y = 10;
-                canJump = false;
-            }
+            player.setControls({ jump: true });
             break;
         case 'ShiftLeft':
-            isRunning = true;
+            player.setControls({ run: true });
             break;
     }
 };
 
 const onKeyUp = function(event) {
+    if (!player) return;
+    
     switch (event.code) {
         case 'ArrowUp':
         case 'KeyW':
-            moveForward = false;
+            player.setControls({ moveForward: false });
             break;
         case 'ArrowLeft':
         case 'KeyA':
-            moveLeft = false;
+            player.setControls({ moveLeft: false });
             break;
         case 'ArrowDown':
         case 'KeyS':
-            moveBackward = false;
+            player.setControls({ moveBackward: false });
             break;
         case 'ArrowRight':
         case 'KeyD':
-            moveRight = false;
+            player.setControls({ moveRight: false });
+            break;
+        case 'Space':
+            player.setControls({ jump: false });
             break;
         case 'ShiftLeft':
-            isRunning = false;
+            player.setControls({ run: false });
             break;
     }
 };
@@ -436,7 +331,7 @@ document.addEventListener('keyup', onKeyUp);
 
 // Handle pointer lock for first-person controls
 document.addEventListener('click', function() {
-    if (gameState.isLoaded && !gameState.playerCanMove) {
+    if (gameState.isLoaded && !gameState.playerCanMove && !gameState.gameOver) {
         controls.lock();
     }
 });
@@ -447,9 +342,14 @@ controls.addEventListener('lock', function() {
 });
 
 controls.addEventListener('unlock', function() {
-    gameState.playerCanMove = false;
-    document.getElementById('info').style.display = 'block';
+    if (!gameState.gameOver) {
+        gameState.playerCanMove = false;
+        document.getElementById('info').style.display = 'block';
+    }
 });
+
+// Handle restart button
+document.getElementById('restart-button').addEventListener('click', restartGame);
 
 // Handle window resize
 window.addEventListener('resize', function() {
@@ -461,7 +361,9 @@ window.addEventListener('resize', function() {
 // Initialize game
 function init() {
     // Create terrain
-    const terrain = createMartianTerrain();
+    const terrain = new MartianTerrain(scene, world);
+    const martianTerrain = terrain.generate();
+    terrain.addDetails();
     
     // Create skybox
     const skybox = createSkybox();
@@ -469,15 +371,12 @@ function init() {
     // Create habitat
     const habitat = createHabitat();
     
-    // Create rocks
-    const rocks = createRocks();
-    
     // Create dust particles
     const dustParticles = createDustParticles();
     
-    // Position player
-    playerBody.position.set(0, 5, 0);
-    camera.position.set(0, 1.7, 0);
+    // Create player
+    player = new Player(scene, world, camera);
+    player.setPosition(0, 5, 0);
     
     // Start game loop
     animate();
@@ -520,35 +419,14 @@ function animate() {
     }
     lastCallTime = time;
     
-    // Update player movement
-    if (gameState.playerCanMove) {
-        direction.z = Number(moveForward) - Number(moveBackward);
-        direction.x = Number(moveRight) - Number(moveLeft);
-        direction.normalize();
+    // Update player
+    if (player) {
+        player.update(delta);
         
-        const currentSpeed = isRunning ? runningSpeed : playerSpeed;
-        
-        if (moveForward || moveBackward) {
-            playerBody.velocity.z = direction.z * currentSpeed;
-        }
-        
-        if (moveLeft || moveRight) {
-            playerBody.velocity.x = direction.x * currentSpeed;
-        }
-    }
-    
-    // Update camera position from physics body
-    camera.position.copy(playerBody.position);
-    camera.position.y += 1.7; // Eye level
-    
-    // Check if player is on ground
-    const rayCastResult = new CANNON.RaycastResult();
-    const rayCastSource = new CANNON.Ray(playerBody.position, new CANNON.Vec3(0, -1, 0));
-    
-    rayCastSource.intersectWorld(world, { result: rayCastResult });
-    
-    if (rayCastResult.hasHit && rayCastResult.distance < 1.1) {
-        canJump = true;
+        // Update camera position from player
+        const playerPos = player.getPosition();
+        camera.position.copy(playerPos);
+        camera.position.y += 1.7; // Eye level
     }
     
     // Update day/night cycle
