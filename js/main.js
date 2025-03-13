@@ -6,6 +6,7 @@ import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.152.0/examples/
 
 import { MartianTerrain } from './terrain.js';
 import { Player } from './player.js';
+import { Environment } from './environment.js';
 
 // Game state
 const gameState = {
@@ -54,8 +55,10 @@ world.gravity.set(0, -3.711, 0); // Mars gravity (3.711 m/s²)
 world.broadphase = new CANNON.NaiveBroadphase();
 world.solver.iterations = 10;
 
-// Player
+// Game objects
 let player;
+let environment;
+let terrain;
 
 // Lighting
 // Ambient light (dim for Mars)
@@ -132,34 +135,6 @@ function createHabitat() {
     world.addBody(habitatBody);
     
     return habitatGroup;
-}
-
-// Create dust particles
-function createDustParticles() {
-    const particleCount = 1000;
-    const particles = new THREE.BufferGeometry();
-    const positions = new Float32Array(particleCount * 3);
-    
-    for (let i = 0; i < particleCount; i++) {
-        const i3 = i * 3;
-        positions[i3] = (Math.random() - 0.5) * 100;
-        positions[i3 + 1] = Math.random() * 5;
-        positions[i3 + 2] = (Math.random() - 0.5) * 100;
-    }
-    
-    particles.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    
-    const particleMaterial = new THREE.PointsMaterial({
-        color: 0xbf5e3d,
-        size: 0.1,
-        transparent: true,
-        opacity: 0.5
-    });
-    
-    const particleSystem = new THREE.Points(particles, particleMaterial);
-    scene.add(particleSystem);
-    
-    return particleSystem;
 }
 
 // Create skybox
@@ -250,6 +225,26 @@ function updateResources(delta) {
     if (gameState.oxygen <= 0 && !gameState.gameOver) {
         gameOver("You ran out of oxygen");
     }
+    
+    // Check for environmental effects on resources
+    if (environment) {
+        const envState = environment.getState();
+        
+        // Dust storms reduce oxygen slightly
+        if (envState.isDustStorm) {
+            gameState.oxygen = Math.max(0, gameState.oxygen - envState.dustStormIntensity * 0.02 * delta);
+        }
+        
+        // Radiation storms reduce health
+        if (envState.isRadiationStorm && player) {
+            player.state.health = Math.max(0, player.state.health - envState.radiationIntensity * 0.1 * delta);
+            
+            // Game over if health depleted
+            if (player.state.health <= 0 && !gameState.gameOver) {
+                gameOver("You died from radiation exposure");
+            }
+        }
+    }
 }
 
 // Game over function
@@ -293,6 +288,13 @@ const onKeyDown = function(event) {
             break;
         case 'ShiftLeft':
             player.setControls({ run: true });
+            break;
+        // Debug keys for testing
+        case 'KeyT':
+            if (environment) environment.forceDustStorm();
+            break;
+        case 'KeyR':
+            if (environment) environment.forceRadiationStorm();
             break;
     }
 };
@@ -361,7 +363,7 @@ window.addEventListener('resize', function() {
 // Initialize game
 function init() {
     // Create terrain
-    const terrain = new MartianTerrain(scene, world);
+    terrain = new MartianTerrain(scene, world);
     const martianTerrain = terrain.generate();
     terrain.addDetails();
     
@@ -371,12 +373,12 @@ function init() {
     // Create habitat
     const habitat = createHabitat();
     
-    // Create dust particles
-    const dustParticles = createDustParticles();
-    
     // Create player
     player = new Player(scene, world, camera);
     player.setPosition(0, 5, 0);
+    
+    // Create environment effects
+    environment = new Environment(scene, camera);
     
     // Start game loop
     animate();
@@ -427,6 +429,11 @@ function animate() {
         const playerPos = player.getPosition();
         camera.position.copy(playerPos);
         camera.position.y += 1.7; // Eye level
+    }
+    
+    // Update environment effects
+    if (environment) {
+        environment.update(delta);
     }
     
     // Update day/night cycle
